@@ -177,7 +177,7 @@ abstract class AbstractMessageProcessorChain extends AbstractExecutableComponent
                           handled -> errorSwitchSinkSinkRef.next(right(handled)),
                           rethrown -> errorSwitchSinkSinkRef.next(left((MessagingException) rethrown, CoreEvent.class)))))
                               // This Either here is used to propagate errors. If the error is sent directly through the merged with Flux,
-                              // it will be cancelled, ignoring the onErrorcontinue of the parent Flux.
+                              // it will be cancelled, ignoring the onErrorContinue of the parent Flux.
                               .map(event -> right(MessagingException.class, event))
                               .doOnNext(r -> errorSwitchSinkSinkRef.next(r))
                               .doOnError(t -> errorSwitchSinkSinkRef.error(t))

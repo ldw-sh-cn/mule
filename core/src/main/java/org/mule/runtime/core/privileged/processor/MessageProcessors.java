@@ -501,7 +501,6 @@ public class MessageProcessors {
                     // it will be cancelled, ignoring the onErrorcontinue of the parent Flux.
                     .doOnError(t -> errorSwitchSinkSinkRef.error(t))
                     .doOnComplete(() -> errorSwitchSinkSinkRef.complete());
-
                 return subscribeFluxOnPublisherSubscription(create(errorSwitchSinkSinkRef), upstream)
                     .map(propagateErrorResponseMapper().andThen(MessageProcessors::toParentContext));
               }
