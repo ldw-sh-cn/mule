@@ -75,6 +75,6 @@ public class TestNonBlockingProcessor extends AbstractComponent
 
   @Override
   public void dispose() {
-    customScheduler.ifComputed(sch -> sch.stop());
+    customScheduler.ifComputed(Scheduler::stop);
   }
 }
