@@ -68,8 +68,6 @@ public final class InterceptedReactiveProcessor implements ReactiveProcessor {
 
   @Override
   public String toString() {
-    return (processor instanceof Component)
-        ? ((Component) processor).getLocation().getLocation()
-        : processor.toString();
+    return "InterceptedReactiveProcessor: " + processor.toString();
   }
 }

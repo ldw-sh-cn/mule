@@ -88,6 +88,22 @@ public interface InternalEvent extends PrivilegedEvent {
   <T extends EventInternalContext> void setOperationPolicyContext(EventInternalContext<T> context);
 
   /**
+   * @return a {@link EventInternalContext} with state required by the execution engine when executing processors in a blocking
+   *         way. This is needed by the execution engine when running within transactions, to avoid thread switches.
+   * @since 4.3.0
+   */
+  <T extends EventInternalContext> EventInternalContext<T> getBlockingExecutionContext();
+
+  /**
+   * Sets context with state required by the execution engine when executing processors in a blocking way. This is needed by the
+   * execution engine when running within transactions, to avoid thread switches.
+   *
+   * @param context an {@link EventInternalContext}
+   * @since 4.3.0
+   */
+  <T extends EventInternalContext> void setBlockingExecutionContext(EventInternalContext<T> context);
+
+  /**
    * Create new {@link Builder} based on an existing {@link CoreEvent} instance. The existing {@link EventContext} is conserved.
    *
    * @param event existing event to use as a template to create builder instance

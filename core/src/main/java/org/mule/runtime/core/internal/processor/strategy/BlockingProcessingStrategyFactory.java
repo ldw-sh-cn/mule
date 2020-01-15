@@ -8,8 +8,8 @@ package org.mule.runtime.core.internal.processor.strategy;
 
 import static org.mule.runtime.core.api.rx.Exceptions.unwrap;
 import static org.mule.runtime.core.api.rx.Exceptions.wrapFatal;
+import static org.slf4j.LoggerFactory.getLogger;
 import static reactor.core.publisher.Flux.from;
-import static reactor.core.publisher.Mono.just;
 import static reactor.core.publisher.Mono.subscriberContext;
 
 import org.mule.runtime.core.api.MuleContext;
@@ -22,6 +22,17 @@ import org.mule.runtime.core.api.processor.ReactiveProcessor.ProcessingType;
 import org.mule.runtime.core.api.processor.Sink;
 import org.mule.runtime.core.api.processor.strategy.ProcessingStrategy;
 import org.mule.runtime.core.api.processor.strategy.ProcessingStrategyFactory;
+import org.mule.runtime.core.internal.exception.MessagingException;
+import org.mule.runtime.core.internal.processor.BlockingExecutionContext;
+import org.mule.runtime.core.internal.rx.FluxSinkRecorder;
+
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+
+import org.slf4j.Logger;
+
+import reactor.core.publisher.Flux;
+import reactor.util.context.Context;
 
 /**
  * Processing strategy that processes the {@link Pipeline} in the caller thread and does not schedule the processing of any
@@ -32,6 +43,8 @@ import org.mule.runtime.core.api.processor.strategy.ProcessingStrategyFactory;
  * thread.
  */
 public class BlockingProcessingStrategyFactory implements ProcessingStrategyFactory {
+
+  private static final Logger LOGGER = getLogger(BlockingProcessingStrategy.class);
 
   public static final ProcessingStrategy BLOCKING_PROCESSING_STRATEGY_INSTANCE = new BlockingProcessingStrategy();
 
@@ -60,21 +73,58 @@ public class BlockingProcessingStrategyFactory implements ProcessingStrategyFact
 
     @Override
     public ReactiveProcessor onProcessor(ReactiveProcessor processor) {
-      return publisher -> from(publisher)
-          .flatMap(e -> subscriberContext()
-              .flatMap(ctx -> just(e).handle((event, sink) -> {
-                try {
-                  CoreEvent result = just(event).transform(processor)
-                      .subscriberContext(ctx)
-                      .block();
-                  if (result != null) {
-                    sink.next(result);
+      return publisher -> subscriberContext()
+          .flatMapMany(ctx -> {
+            final FluxSinkRecorder<CoreEvent> processSink = processorAsSink(processor, ctx);
+
+            return from(publisher)
+                .doOnComplete(() -> processSink.complete())
+                .onErrorContinue((t, e) -> processSink.error(t))
+                .handle((event, sink) -> {
+                  try {
+                    final CompletableFuture<CoreEvent> response = new CompletableFuture<>();
+                    BlockingExecutionContext.from(event).registerFuture(processor, event.getContext().getId(), response);
+                    processSink.next(event);
+
+                    CoreEvent result = response.get();
+                    if (result != null) {
+                      sink.next(result);
+                    }
+                  } catch (ExecutionException throwable) {
+                    sink.error(wrapFatal(unwrap(throwable.getCause())));
+                  } catch (Throwable throwable) {
+                    sink.error(wrapFatal(unwrap(throwable)));
                   }
-                } catch (Throwable throwable) {
-                  sink.error(wrapFatal(unwrap(throwable)));
-                }
-              })));
+                });
+          });
     }
 
   }
+
+  public static FluxSinkRecorder<CoreEvent> processorAsSink(ReactiveProcessor processor, Context ctx) {
+    final FluxSinkRecorder<CoreEvent> processSink = new FluxSinkRecorder<>();
+    Flux.create(processSink)
+        .transform(processor)
+        .doOnNext(event -> BlockingExecutionContext.from(event)
+            .completeFuture(processor, event.getContext().getId(), event))
+        .onErrorContinue((t, failingEvent) -> {
+          CoreEvent event;
+          if (t instanceof MessagingException) {
+            MessagingException me = (MessagingException) t;
+            event = me.getEvent();
+          } else {
+            event = (CoreEvent) failingEvent;
+          }
+          BlockingExecutionContext.from(event)
+              .completeFutureExceptionally(processor, event.getContext().getId(), t);
+        })
+        .subscriberContext(ctx)
+        .subscribe(e -> {
+        },
+                   t -> LOGGER
+                       .error("Exception reached blocking PS subscriber for processor '" + processor.toString() + "'",
+                              t));
+    return processSink;
+  }
+
 }

@@ -22,12 +22,14 @@ import static org.mule.runtime.core.api.transaction.TransactionConfig.ACTION_ALW
 import static org.mule.runtime.core.api.transaction.TransactionConfig.ACTION_BEGIN_OR_JOIN;
 import static org.mule.runtime.core.api.transaction.TransactionConfig.ACTION_INDIFFERENT;
 import static org.mule.runtime.core.api.transaction.TransactionCoordination.isTransactionActive;
+import static org.mule.runtime.core.internal.processor.strategy.BlockingProcessingStrategyFactory.processorAsSink;
+import static org.mule.runtime.core.internal.processor.strategy.TransactionAwareStreamEmitterProcessingStrategyDecorator.popTxFromSubscriberContext;
+import static org.mule.runtime.core.internal.processor.strategy.TransactionAwareStreamEmitterProcessingStrategyDecorator.pushTxToSubscriberContext;
 import static org.mule.runtime.core.privileged.processor.MessageProcessors.buildNewChainWithListOfProcessors;
 import static org.mule.runtime.core.privileged.processor.MessageProcessors.getProcessingStrategy;
 import static org.mule.runtime.core.privileged.processor.MessageProcessors.processToApply;
 import static org.slf4j.LoggerFactory.getLogger;
 import static reactor.core.publisher.Flux.from;
-import static reactor.core.publisher.Mono.just;
 import static reactor.core.publisher.Mono.subscriberContext;
 
 import org.mule.runtime.api.exception.DefaultMuleException;
@@ -39,21 +41,23 @@ import org.mule.runtime.core.api.exception.FlowExceptionHandler;
 import org.mule.runtime.core.api.execution.ExecutionTemplate;
 import org.mule.runtime.core.api.processor.AbstractMessageProcessorOwner;
 import org.mule.runtime.core.api.processor.Processor;
+import org.mule.runtime.core.api.processor.ReactiveProcessor;
 import org.mule.runtime.core.api.transaction.MuleTransactionConfig;
 import org.mule.runtime.core.api.transaction.Transaction;
 import org.mule.runtime.core.api.transaction.TransactionConfig;
 import org.mule.runtime.core.api.transaction.TransactionCoordination;
 import org.mule.runtime.core.internal.exception.ErrorHandler;
+import org.mule.runtime.core.internal.rx.FluxSinkRecorder;
 import org.mule.runtime.core.privileged.processor.Scope;
 import org.mule.runtime.core.privileged.processor.chain.MessageProcessorChain;
 import org.mule.runtime.core.privileged.transaction.TransactionAdapter;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 
 import org.reactivestreams.Publisher;
 import org.slf4j.Logger;
-
-import reactor.util.context.Context;
 
 /**
  * Wraps the invocation of a list of nested processors {@link org.mule.runtime.core.api.processor.Processor} with a transaction.
@@ -76,30 +80,38 @@ public class TryScope extends AbstractMessageProcessorOwner implements Scope {
 
   @Override
   public Publisher<CoreEvent> apply(Publisher<CoreEvent> publisher) {
-    if (isTransactionActive() || transactionConfig.getAction() != ACTION_INDIFFERENT) {
+    if (transactionConfig.getAction() != ACTION_INDIFFERENT) {
       ExecutionTemplate<CoreEvent> executionTemplate = createScopeTransactionalExecutionTemplate(muleContext, transactionConfig);
       final I18nMessage txErrorMessage = errorInvokingMessageProcessorWithinTransaction(nestedChain, transactionConfig);
 
       return subscriberContext()
-          .flatMapMany(ctx -> from(publisher)
-              .handle((event, sink) -> {
-                final boolean txPrevoiuslyActive = isTransactionActive();
-                Transaction previousTx = getCurrentTx();
-                try {
-                  sink.next(executionTemplate.execute(() -> {
-                    handlePreviousTransaction(txPrevoiuslyActive, previousTx, getCurrentTx());
-                    return processBlocking(ctx, event);
-                  }));
-                } catch (Exception e) {
-                  final Throwable unwrapped = unwrap(e);
+          .flatMapMany(ctx -> {
+            final ReactiveProcessor decoratedNestedChain = pub -> from(pub)
+                .subscriberContext(popTxFromSubscriberContext())
+                .transform(nestedChain)
+                .subscriberContext(pushTxToSubscriberContext(getLocation().getLocation()));
+            final FluxSinkRecorder<CoreEvent> processSink = processorAsSink(decoratedNestedChain, ctx);
 
-                  if (unwrapped instanceof MuleException) {
-                    sink.error(unwrapped);
-                  } else {
-                    sink.error(new DefaultMuleException(txErrorMessage, unwrapped));
+            return from(publisher)
+                .handle((event, sink) -> {
+                  final boolean txPrevoiuslyActive = isTransactionActive();
+                  Transaction previousTx = getCurrentTx();
+                  try {
+                    sink.next(executionTemplate.execute(() -> {
+                      handlePreviousTransaction(txPrevoiuslyActive, previousTx, getCurrentTx());
+                      return processBlocking(processSink, decoratedNestedChain, event);
+                    }));
+                  } catch (Exception e) {
+                    final Throwable unwrapped = unwrap(e);
+
+                    if (unwrapped instanceof MuleException) {
+                      sink.error(unwrapped);
+                    } else {
+                      sink.error(new DefaultMuleException(txErrorMessage, unwrapped));
+                    }
                   }
-                }
-              }));
+                });
+          });
     } else {
       return from(publisher).transform(nestedChain);
     }
@@ -114,14 +126,19 @@ public class TryScope extends AbstractMessageProcessorOwner implements Scope {
     }
   }
 
-  private CoreEvent processBlocking(Context ctx, CoreEvent event) throws MuleException {
+  private CoreEvent processBlocking(FluxSinkRecorder<CoreEvent> processSink, ReactiveProcessor decoratedNestedChain,
+                                    CoreEvent event)
+      throws MuleException {
     try {
-      return just(event)
-          .transform(nestedChain)
-          .onErrorStop()
-          .subscriberContext(ctx)
-          .block();
+      final CompletableFuture<CoreEvent> response = new CompletableFuture<>();
+      BlockingExecutionContext.from(event).registerFuture(decoratedNestedChain, event.getContext().getId(), response);
+      processSink.next(event);
+
+      return response.get();
     } catch (Throwable e) {
+      if (e instanceof ExecutionException) {
+        e = e.getCause();
+      }
       if (e.getCause() instanceof InterruptedException) {
         currentThread().interrupt();
       }
