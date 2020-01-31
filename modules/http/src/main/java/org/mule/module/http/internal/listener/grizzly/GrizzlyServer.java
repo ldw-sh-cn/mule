@@ -6,6 +6,7 @@
  */
 package org.mule.module.http.internal.listener.grizzly;
 
+import static java.lang.System.currentTimeMillis;
 import org.mule.module.http.internal.listener.HttpListenerRegistry;
 import org.mule.module.http.internal.listener.RequestHandlerManager;
 import org.mule.module.http.internal.listener.Server;
@@ -15,13 +16,10 @@ import org.mule.module.http.internal.listener.matcher.ListenerRequestMatcher;
 
 import java.io.IOException;
 
-import org.glassfish.grizzly.nio.transport.TCPNIOConnection;
-import org.glassfish.grizzly.nio.transport.TCPNIOServerConnection;
-import org.glassfish.grizzly.nio.transport.TCPNIOTransport;
-import org.glassfish.grizzly.CloseListener;
-import org.glassfish.grizzly.CloseType;
 import org.glassfish.grizzly.Connection;
 import org.glassfish.grizzly.ConnectionProbe;
+import org.glassfish.grizzly.nio.transport.TCPNIOServerConnection;
+import org.glassfish.grizzly.nio.transport.TCPNIOTransport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,8 +44,15 @@ public class GrizzlyServer implements Server
     @Override
     public synchronized void start() throws IOException
     {
+        transport.getConnectionMonitoringConfig().addProbes(new ConnectionProbe.Adapter()
+        {
+            @Override
+            public void onAcceptEvent(Connection serverConnection, Connection clientConnection)
+            {
+                clientConnection.getAttributes().setAttribute("Server Connection", serverConnection);
+            }
+        });
         serverConnection = transport.bind(serverAddress.getIp(), serverAddress.getPort());
-        serverConnection.getMonitoringConfig().addProbes(new CloseAcceptedConnectionsOnServerCloseProbe());
         stopped = false;
     }
 
@@ -61,6 +66,7 @@ public class GrizzlyServer implements Server
         }
         finally
         {
+            stopped = true;
             stopping = false;
         }
     }
@@ -89,64 +95,8 @@ public class GrizzlyServer implements Server
         return this.listenerRegistry.addRequestHandler(this, requestHandler, listenerRequestMatcher);
     }
 
-    private static class CloseAcceptedConnectionsOnServerCloseProbe extends ConnectionProbe.Adapter
+    public void cleanIdleConnections()
     {
-
-        /**
-         * {@inheritDoc}
-         */
-        @Override
-        public void onAcceptEvent(Connection serverConnection, Connection clientConnection)
-        {
-            final CloseAcceptedConnectionOnServerClose callback = new CloseAcceptedConnectionOnServerClose(clientConnection);
-            serverConnection.addCloseListener(callback);
-            clientConnection.addCloseListener(new RemoveCloseListenerOnClientClosed(serverConnection, callback));
-        }
-    }
-
-    private static class CloseAcceptedConnectionOnServerClose implements CloseListener<TCPNIOServerConnection, CloseType>
-    {
-
-        private final Connection acceptedConnection;
-
-        private CloseAcceptedConnectionOnServerClose(Connection acceptedConnection)
-        {
-            this.acceptedConnection = acceptedConnection;
-        }
-
-        /**
-         * {@inheritDoc}
-         */
-        @Override
-        public void onClosed(TCPNIOServerConnection closeable, CloseType type) throws IOException
-        {
-            acceptedConnection.closeSilently();
-        }
-    }
-
-    private static class RemoveCloseListenerOnClientClosed implements CloseListener<TCPNIOConnection, CloseType>
-    {
-
-        private CloseAcceptedConnectionOnServerClose callbackToRemove;
-        private Connection serverConnection;
-
-        private RemoveCloseListenerOnClientClosed(Connection serverConnection,
-                                                  CloseAcceptedConnectionOnServerClose callbackToRemove)
-        {
-            this.serverConnection = serverConnection;
-            this.callbackToRemove = callbackToRemove;
-        }
-
-        /**
-         * {@inheritDoc}
-         */
-        @Override
-        public void onClosed(TCPNIOConnection closeable, CloseType type) throws IOException
-        {
-            if (serverConnection.isOpen())
-            {
-                serverConnection.removeCloseListener(callbackToRemove);
-            }
-        }
+        transport.setKeepAlive(false);
     }
 }

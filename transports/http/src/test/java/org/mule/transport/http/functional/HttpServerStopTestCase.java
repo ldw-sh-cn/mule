@@ -39,7 +39,8 @@ public class HttpServerStopTestCase extends FunctionalTestCase
     @Test
     public void closeClientConnectionsWhenServerIsStopped() throws IOException, MuleException
     {
-        try (Socket clientSocket = new Socket("localhost", dynamicPort.getNumber())) {
+        try (Socket clientSocket = new Socket("localhost", dynamicPort.getNumber()))
+        {
             assertThat(clientSocket.isConnected(), is(true));
 
             sendRequest(clientSocket);
@@ -48,8 +49,8 @@ public class HttpServerStopTestCase extends FunctionalTestCase
             sendRequest(clientSocket);
             assertResponse(getResponse(clientSocket), true);
 
-            HttpListenerConfig httpConfig = muleContext.getRegistry().lookupObject("httpConfig");
-            httpConfig.stop();
+            muleContext.stop();
+            muleContext.start();
 
             sendRequest(clientSocket);
             assertResponse(getResponse(clientSocket), false);
