@@ -92,7 +92,7 @@ public final class DefaultExecutionMediator<M extends ComponentModel> implements
    * Executes the operation per the specification in this classes' javadoc
    *
    * @param executor an {@link CompletableComponentExecutor}
-   * @param context the {@link ExecutionContextAdapter} for the {@code executor} to use
+   * @param context  the {@link ExecutionContextAdapter} for the {@code executor} to use
    * @return the operation's result
    * @throws Exception if the operation or a {@link Interceptor#before(ExecutionContext)} invokation fails
    */
@@ -139,16 +139,36 @@ public final class DefaultExecutionMediator<M extends ComponentModel> implements
     }
   }
 
+
+  private class TransformingFutureExecutionCallbackDecorator extends FutureExecutionCallbackDecorator {
+
+    private final ExecutionContextAdapter<M> context;
+
+    public TransformingFutureExecutionCallbackDecorator(CompletableFuture<Object> future,
+                                                        ExecutionContextAdapter<M> context) {
+      super(future);
+      this.context = context;
+    }
+
+    @Override
+    public void complete(Object value) {
+      super.complete(resultTransformer.apply(context, value));
+    }
+  }
+
   private void executeWithRetry(ExecutionContextAdapter<M> context,
                                 RetryPolicyTemplate retryPolicy,
                                 Consumer<ExecutorCallback> executeCommand,
                                 ExecutorCallback callback) {
 
     retryPolicy.applyPolicy(() -> {
-      CompletableFuture<Object> future = new CompletableFuture<>();
-      executeCommand.accept(new FutureExecutionCallbackDecorator(future));
-      return future;
-    },
+                              CompletableFuture<Object> future = new CompletableFuture<>();
+                              FutureExecutionCallbackDecorator callbackDecorator = resultTransformer != null
+                                  ? new TransformingFutureExecutionCallbackDecorator(future, context)
+                                  : new FutureExecutionCallbackDecorator(future);
+                              executeCommand.accept(callbackDecorator);
+                              return future;
+                            },
                             e -> shouldRetry(e, context),
                             e -> interceptorChain.onError(context, e),
                             e -> {
@@ -190,9 +210,6 @@ public final class DefaultExecutionMediator<M extends ComponentModel> implements
         // after() method cannot be invoked in the finally. Needs to be explicitly called before completing the callback.
         // Race conditions appear otherwise, specially in connection pooling scenarios.
         try {
-          if (resultTransformer != null) {
-            value = resultTransformer.apply(context, value);
-          }
           interceptorChain.onSuccess(context, value);
           executorCallback.complete(value);
         } catch (Throwable t) {
