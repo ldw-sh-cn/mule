@@ -8,12 +8,13 @@ package org.mule.runtime.core.internal.source.scheduler;
 
 import static java.lang.Boolean.parseBoolean;
 import static java.lang.System.getProperty;
+import static java.lang.Thread.currentThread;
 import static java.util.Collections.emptyList;
 import static java.util.Optional.empty;
 import static org.mule.runtime.api.util.MuleSystemProperties.MULE_DISABLE_SCHEDULERS;
 import static org.mule.runtime.core.api.config.i18n.CoreMessages.failedToScheduleWork;
 import static org.mule.runtime.core.api.source.MessageSource.BackPressureStrategy.FAIL;
-import static org.mule.runtime.core.api.util.ClassUtils.withContextClassLoader;
+import static org.mule.runtime.core.api.util.ClassUtils.setContextClassLoader;
 import static org.mule.runtime.core.internal.component.ComponentUtils.getFromAnnotatedObject;
 import static org.mule.runtime.core.privileged.event.PrivilegedEvent.setCurrentEvent;
 import static org.slf4j.LoggerFactory.getLogger;
@@ -90,7 +91,7 @@ public class DefaultSchedulerMessageSource extends AbstractComponent
 
   /**
    * @param muleContext application's context
-   * @param scheduler the scheduler
+   * @param scheduler   the scheduler
    */
   public DefaultSchedulerMessageSource(MuleContext muleContext, PeriodicScheduler scheduler,
                                        boolean disallowConcurrentExecution) {
@@ -105,9 +106,15 @@ public class DefaultSchedulerMessageSource extends AbstractComponent
       return;
     }
     try {
-      // The initialization phase if handled by the scheduler
-      schedulingJob =
-          withContextClassLoader(muleContext.getExecutionClassLoader(), () -> scheduler.schedule(pollingExecutor, () -> run()));
+      Thread currentThread = currentThread();
+      ClassLoader originalClassLoader = currentThread.getContextClassLoader();
+      setContextClassLoader(currentThread, originalClassLoader, muleContext.getExecutionClassLoader());
+      try {
+        // The initialization phase if handled by the scheduler
+        schedulingJob = scheduler.schedule(pollingExecutor, () -> run());
+      } finally {
+        setContextClassLoader(currentThread, muleContext.getExecutionClassLoader(), originalClassLoader);
+      }
       this.started = true;
     } catch (Exception ex) {
       this.stop();
@@ -131,7 +138,16 @@ public class DefaultSchedulerMessageSource extends AbstractComponent
   @Override
   public void trigger() {
     if (!disabled) {
-      pollingExecutor.execute(() -> withContextClassLoader(muleContext.getExecutionClassLoader(), () -> poll()));
+      pollingExecutor.execute(() -> {
+        Thread currentThread = currentThread();
+        ClassLoader originalTCCL = currentThread.getContextClassLoader();
+        currentThread.setContextClassLoader(muleContext.getExecutionClassLoader());
+        try {
+          poll();
+        } finally {
+          currentThread.setContextClassLoader(originalTCCL);
+        }
+      });
     }
   }
 
@@ -251,6 +267,7 @@ public class DefaultSchedulerMessageSource extends AbstractComponent
     return FAIL;
   }
 
+
   private class SchedulerProcessContext implements MessageProcessContext {
 
     private final MessagingExceptionResolver messagingExceptionResolver = new MessagingExceptionResolver(getMessageSource());
@@ -284,6 +301,7 @@ public class DefaultSchedulerMessageSource extends AbstractComponent
     public FlowConstruct getFlowConstruct() {
       return flowConstruct;
     }
+
   }
 
   /**
