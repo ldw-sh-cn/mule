@@ -26,8 +26,11 @@ import org.mule.runtime.core.api.processor.ReactiveProcessor;
 import org.mule.runtime.core.api.processor.strategy.AsyncProcessingStrategyFactory;
 import org.mule.runtime.core.api.processor.strategy.ProcessingStrategy;
 import org.mule.runtime.core.internal.context.thread.notification.ThreadLoggingExecutorServiceDecorator;
+import org.mule.runtime.core.internal.processor.chain.InterceptedReactiveProcessor;
 import org.mule.runtime.core.internal.processor.strategy.StreamEmitterProcessingStrategyFactory.StreamEmitterProcessingStrategy;
 import org.mule.runtime.core.internal.util.rx.RetrySchedulerWrapper;
+import org.mule.runtime.core.privileged.processor.Router;
+import org.mule.runtime.core.privileged.processor.Scope;
 
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.Supplier;
@@ -163,7 +166,10 @@ public class ProactorStreamEmitterProcessingStrategyFactory extends AbstractStre
         return publisher -> scheduleProcessor(processor, retryScheduler, from(publisher))
             .subscriberContext(ctx -> ctx.put(PROCESSOR_SCHEDULER_CONTEXT_KEY, scheduler));
       } else if (maxConcurrency == MAX_VALUE) {
-        if (processor instanceof OperationInnerProcessor) {
+        if (processor instanceof OperationInnerProcessor
+            || (processor instanceof InterceptedReactiveProcessor
+                && (((InterceptedReactiveProcessor) processor).getProcessor() instanceof Router
+                    || ((InterceptedReactiveProcessor) processor).getProcessor() instanceof Scope))) {
           // For no limit, the java SDK already handles parallelism internally, so no need to do that here
           return publisher -> scheduleProcessor(processor, retryScheduler, from(publisher))
               .subscriberContext(ctx -> ctx.put(PROCESSOR_SCHEDULER_CONTEXT_KEY, scheduler));

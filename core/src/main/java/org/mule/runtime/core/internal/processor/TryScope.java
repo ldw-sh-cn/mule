@@ -47,7 +47,6 @@ import org.mule.runtime.core.api.transaction.Transaction;
 import org.mule.runtime.core.api.transaction.TransactionConfig;
 import org.mule.runtime.core.api.transaction.TransactionCoordination;
 import org.mule.runtime.core.internal.exception.ErrorHandler;
-import org.mule.runtime.core.internal.rx.FluxSinkRecorder;
 import org.mule.runtime.core.privileged.processor.Scope;
 import org.mule.runtime.core.privileged.processor.chain.MessageProcessorChain;
 import org.mule.runtime.core.privileged.transaction.TransactionAdapter;
@@ -58,6 +57,8 @@ import java.util.concurrent.ExecutionException;
 
 import org.reactivestreams.Publisher;
 import org.slf4j.Logger;
+
+import reactor.core.publisher.FluxSink;
 
 /**
  * Wraps the invocation of a list of nested processors {@link org.mule.runtime.core.api.processor.Processor} with a transaction.
@@ -90,7 +91,7 @@ public class TryScope extends AbstractMessageProcessorOwner implements Scope {
                 .subscriberContext(popTxFromSubscriberContext())
                 .transform(nestedChain)
                 .subscriberContext(pushTxToSubscriberContext(getLocation().getLocation()));
-            final FluxSinkRecorder<CoreEvent> processSink = processorAsSink(decoratedNestedChain, ctx);
+            final FluxSink<CoreEvent> processSink = processorAsSink(decoratedNestedChain, ctx).getFluxSink();
 
             return from(publisher)
                 .handle((event, sink) -> {
@@ -126,13 +127,13 @@ public class TryScope extends AbstractMessageProcessorOwner implements Scope {
     }
   }
 
-  private CoreEvent processBlocking(FluxSinkRecorder<CoreEvent> processSink, ReactiveProcessor decoratedNestedChain,
+  private CoreEvent processBlocking(FluxSink<CoreEvent> fluxSink, ReactiveProcessor decoratedNestedChain,
                                     CoreEvent event)
       throws MuleException {
     try {
       final CompletableFuture<CoreEvent> response = new CompletableFuture<>();
       BlockingExecutionContext.from(event).registerFuture(decoratedNestedChain, event.getContext().getId(), response);
-      processSink.next(event);
+      fluxSink.next(event);
 
       return response.get();
     } catch (Throwable e) {
