@@ -108,12 +108,13 @@ public class DefaultSchedulerMessageSource extends AbstractComponent
     try {
       Thread currentThread = currentThread();
       ClassLoader originalClassLoader = currentThread.getContextClassLoader();
-      setContextClassLoader(currentThread, originalClassLoader, muleContext.getExecutionClassLoader());
+      ClassLoader contextClassLoader = muleContext.getExecutionClassLoader();
+      setContextClassLoader(currentThread, originalClassLoader, contextClassLoader);
       try {
         // The initialization phase if handled by the scheduler
         schedulingJob = scheduler.schedule(pollingExecutor, () -> run());
       } finally {
-        setContextClassLoader(currentThread, muleContext.getExecutionClassLoader(), originalClassLoader);
+        setContextClassLoader(currentThread, contextClassLoader, originalClassLoader);
       }
       this.started = true;
     } catch (Exception ex) {
@@ -141,11 +142,12 @@ public class DefaultSchedulerMessageSource extends AbstractComponent
       pollingExecutor.execute(() -> {
         Thread currentThread = currentThread();
         ClassLoader originalTCCL = currentThread.getContextClassLoader();
-        currentThread.setContextClassLoader(muleContext.getExecutionClassLoader());
+        ClassLoader executionClassLoader = muleContext.getExecutionClassLoader();
+        setContextClassLoader(currentThread, originalTCCL, executionClassLoader);
         try {
           poll();
         } finally {
-          currentThread.setContextClassLoader(originalTCCL);
+          setContextClassLoader(currentThread, executionClassLoader, originalTCCL);
         }
       });
     }
@@ -208,7 +210,6 @@ public class DefaultSchedulerMessageSource extends AbstractComponent
       executing = value;
     }
   }
-
 
   /**
    * <p>
